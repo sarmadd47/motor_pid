@@ -31,9 +31,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define COUNTS_PER_REV 4172   // verified with the 10-turn test
-#define ENCODER_DIR    (-1)   // flip the sign so forward counts as positive
-#define SAMPLE_MS      100    // measure speed every 100 ms
+#define COUNTS_PER_REV 4172     // verified with the 10-turn test
+#define ENCODER_DIR    (-1)     // forward counts as positive
+#define SAMPLE_MS      100      // control loop runs every 100 ms
+#define PWM_MAX        4199     // TIM3 ARR = 100% duty
+#define KP             80.0f    // proportional gain (duty counts per RPM of error)
+#define KI             800.0f     // integral gain: start at 0, then try 800
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -120,34 +123,45 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-    while (1)
+  while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // Step 18b: measure output-shaft speed (RPM) every 100 ms while stepping duty every 2 s
-    static const uint32_t duty[] = {1050, 2100, 3150, 4199};   // 25, 50, 75, 100%
-    static uint32_t step = 0, last_step = 0, last_sample = 0;
+    // Step 19: PI speed control. Target alternates 20 / 10 RPM every 5 s
+    static uint32_t last_sample = 0;
     static int32_t  last_count = 0;
-    static uint8_t  started = 0;
+    static float    integral = 0.0f;
 
-    uint32_t now = HAL_GetTick();                  // milliseconds since boot
-
-    if (!started || now - last_step >= 2000) {     // change duty every 2 s
-      if (started) step = (step + 1) % 4;
-      started = 1;
-      last_step = now;
-      __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, duty[step]);
-    }
-
-    if (now - last_sample >= SAMPLE_MS) {          // measure speed every 100 ms
+    uint32_t now = HAL_GetTick();
+    if (now - last_sample >= SAMPLE_MS) {
       last_sample = now;
+
+      // 1. Measure speed
       int32_t count = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
-      int32_t delta = ENCODER_DIR * (count - last_count);    // counts in the last 100 ms
+      int32_t delta = ENCODER_DIR * (count - last_count);
       last_count = count;
-      int32_t rpm_x10 = delta * 6000 / COUNTS_PER_REV;       // RPM x 10, for one decimal place
-      printf("duty: %3lu%%   rpm: %ld.%ld\r\n",
-             (step + 1) * 25, rpm_x10 / 10, (rpm_x10 < 0 ? -rpm_x10 : rpm_x10) % 10);
+      float rpm = delta * (60000.0f / SAMPLE_MS) / COUNTS_PER_REV;
+
+      // 2. Pick the target speed
+      float target = ((now / 5000) % 2 == 0) ? 20.0f : 10.0f;
+
+      // 3. PI controller
+      float error = target - rpm;
+      float dt = SAMPLE_MS / 1000.0f;
+      integral += error * dt;
+      float u = KP * error + KI * integral;
+
+      // 4. Clamp to the PWM range; if clamped, undo this step's integral (anti-windup)
+      if (u > PWM_MAX) { u = PWM_MAX; integral -= error * dt; }
+      if (u < 0)       { u = 0;       integral -= error * dt; }
+      __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, (uint32_t)u);
+
+      // 5. Print target, speed, and duty (printf has no %f, so print x10 integers)
+      int32_t rpm10 = (int32_t)(rpm * 10.0f);
+      printf("target: %2d   rpm: %ld.%ld   duty: %3ld%%\r\n",
+             (int)target, rpm10 / 10, (rpm10 < 0 ? -rpm10 : rpm10) % 10,
+             (int32_t)(u * 100.0f / PWM_MAX));
     }
   }
   /* USER CODE END 3 */
