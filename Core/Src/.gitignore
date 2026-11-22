@@ -1,0 +1,10 @@
+# Build output (regenerated on every build)
+build/
+*.o
+*.d
+*.elf
+*.map
+*.list
+*.bin
+*.hex
+.cache/
